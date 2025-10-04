@@ -10,7 +10,6 @@ from streamlit_autorefresh import st_autorefresh
 st_autorefresh(interval=2000, key="autorefresh")
 
 st.set_page_config(page_title="Vote to Reveal", layout="wide")
-st.title("🎉 Vote to Reveal the Theme")
 
 # ---- Initialize Firebase (server-side using service account) ----
 def init_firebase():
@@ -36,6 +35,7 @@ init_firebase()
 votes_ref = db.reference("/votes/total")
 users_ref = db.reference("/votes/users")
 logs_ref = db.reference("/votes/logs")
+force_reveal_ref = db.reference("/admin/force_reveal")
 
 # Helper functions
 def get_votes():
@@ -54,51 +54,127 @@ def record_vote(client_id):
     logs_ref.push({"user": client_id, "time": int(time.time())})
     return new_total
 
-# Give each visitor a persistent client id for this browser tab/session
+def is_force_revealed():
+    return force_reveal_ref.get() or False
+
+def set_force_reveal(value):
+    force_reveal_ref.set(value)
+
+# Admin credentials (store in secrets for security)
+ADMIN_USERNAME = st.secrets.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "password123")
+
+# Login/Role selection
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = None
+
 if 'client_id' not in st.session_state:
     st.session_state.client_id = str(uuid.uuid4())
 
-# UI: config from secrets or sidebar
-default_thresh = int(st.secrets.get("THRESHOLD", 50))
-threshold = int(st.sidebar.number_input("Reveal threshold", min_value=1, value=default_thresh))
-theme = st.secrets.get("THEME", "Your Theme Here")
+# Login page
+if st.session_state.user_role is None:
+    st.title("🎉 Vote to Reveal the Theme")
+    st.header("Choose your role:")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("👤 User")
+        if st.button("Continue as User"):
+            st.session_state.user_role = "user"
+            st.rerun()
+    
+    with col2:
+        st.subheader("🔐 Admin")
+        with st.form("admin_login"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            login_btn = st.form_submit_button("Login as Admin")
+            
+            if login_btn:
+                if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+                    st.session_state.user_role = "admin"
+                    st.success("Admin login successful!")
+                    st.rerun()
+                else:
+                    st.error("Invalid credentials!")
 
-# Current votes and progress
-votes = get_votes()
-st.metric("Total Votes", votes)
-st.progress(min(votes/threshold, 1.0))
-
-# Voting column
-left, right = st.columns([2,1])
-with left:
-    if has_voted(st.session_state.client_id):
-        st.info("✅ You already voted — thank you!")
-    else:
-        if st.button("Vote"):
-            try:
-                record_vote(st.session_state.client_id)
-                st.success("Thanks — your vote has been counted! 🎉")
-            except Exception as e:
-                st.error("Could not record vote. Try again or contact the organizer.")
-with right:
-    st.write(f"Threshold: **{threshold}**")
-    if votes < threshold:
-        st.write(f"**{threshold - votes}** votes left to reveal")
-    else:
-        st.write("Threshold reached!")
-
-# Reveal logic
-if votes >= threshold:
-    st.balloons()
-    reveal_html = f"""
-    <div style="text-align:center; padding:20px;">
-      <h1 style="font-size:48px; margin:0;">🎊 THE THEME 🎊</h1>
-      <h2 style="font-size:36px; margin-top:10px;">{theme}</h2>
-    </div>
-    """
-    components.html(reveal_html, height=220)
-
-# Admin: optional force-reveal (use only on host machine)
-if st.sidebar.checkbox("Admin: Force reveal (local override)"):
-    st.balloons()
-    components.html(f"<h2 style='text-align:center'>{theme}</h2>", height=120)
+# Main app for logged-in users
+else:
+    # Logout button
+    if st.sidebar.button("Logout"):
+        st.session_state.user_role = None
+        st.rerun()
+    
+    st.title("🎉 Vote to Reveal the Theme")
+    st.sidebar.write(f"**Role:** {st.session_state.user_role.title()}")
+    
+    # UI: config from secrets or sidebar
+    default_thresh = int(st.secrets.get("THRESHOLD", 50))
+    threshold = int(st.sidebar.number_input("Reveal threshold", min_value=1, value=default_thresh))
+    theme = st.secrets.get("THEME", "Your Theme Here")
+    
+    # Current votes and progress
+    votes = get_votes()
+    force_revealed = is_force_revealed()
+    
+    st.metric("Total Votes", votes)
+    st.progress(min(votes/threshold, 1.0))
+    
+    # Admin controls
+    if st.session_state.user_role == "admin":
+        st.sidebar.header("🔧 Admin Controls")
+        
+        if force_revealed:
+            if st.sidebar.button("🔒 Hide Theme"):
+                set_force_reveal(False)
+                st.sidebar.success("Theme hidden!")
+                st.rerun()
+        else:
+            if st.sidebar.button("🔓 Force Reveal Theme"):
+                set_force_reveal(True)
+                st.sidebar.success("Theme force revealed!")
+                st.rerun()
+        
+        if st.sidebar.button("🗑️ Reset All Votes"):
+            votes_ref.set(0)
+            users_ref.delete()
+            logs_ref.delete()
+            set_force_reveal(False)
+            st.sidebar.success("All data reset!")
+            st.rerun()
+    
+    # Voting section (only for users)
+    if st.session_state.user_role == "user":
+        left, right = st.columns([2,1])
+        with left:
+            if has_voted(st.session_state.client_id):
+                st.info("✅ You already voted — thank you!")
+            else:
+                if st.button("Vote"):
+                    try:
+                        record_vote(st.session_state.client_id)
+                        st.success("Thanks — your vote has been counted! 🎉")
+                        st.rerun()
+                    except Exception as e:
+                        st.error("Could not record vote. Try again or contact the organizer.")
+        with right:
+            st.write(f"Threshold: **{threshold}**")
+            if votes < threshold and not force_revealed:
+                st.write(f"**{threshold - votes}** votes left to reveal")
+            else:
+                st.write("Threshold reached!" if votes >= threshold else "Admin force revealed!")
+    
+    # Reveal logic
+    if votes >= threshold or force_revealed:
+        st.balloons()
+        reveal_html = f"""
+        <div style="text-align:center; padding:20px;">
+          <h1 style="font-size:48px; margin:0;">🎊 THE THEME 🎊</h1>
+          <h2 style="font-size:36px; margin-top:10px;">{theme}</h2>
+        </div>
+        """
+        components.html(reveal_html, height=220)
+        
+        if force_revealed and st.session_state.user_role == "admin":
+            st.info("⚡ Theme force revealed by admin")
