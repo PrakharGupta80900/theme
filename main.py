@@ -1,10 +1,4 @@
-# Change this line:
-if 'user_role' not in st.session_state:
-    st.session_state.user_role = None
-
-# To this:
-if 'user_role' not in st.session_state:
-    st.session_state.user_role = "user"# main.py
+# main.py
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, db
