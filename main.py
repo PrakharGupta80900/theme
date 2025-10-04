@@ -1,4 +1,10 @@
-# main.py
+# Change this line:
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = None
+
+# To this:
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = "user"# main.py
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, db
@@ -64,28 +70,17 @@ def set_force_reveal(value):
 ADMIN_USERNAME = st.secrets.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "password123")
 
-# Login/Role selection
+# Initialize session state - DEFAULT TO USER
 if 'user_role' not in st.session_state:
-    st.session_state.user_role = None
+    st.session_state.user_role = "user"
 
 if 'client_id' not in st.session_state:
     st.session_state.client_id = str(uuid.uuid4())
 
-# Login page
-if st.session_state.user_role is None:
-    st.title("🎉 Vote to Reveal the Theme")
-    st.header("Choose your role:")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("👤 User")
-        if st.button("Continue as User"):
-            st.session_state.user_role = "user"
-            st.rerun()
-    
-    with col2:
-        st.subheader("🔐 Admin")
+# Admin login in sidebar (only show if user)
+if st.session_state.user_role == "user":
+    with st.sidebar:
+        st.header("🔐 Admin Login")
         with st.form("admin_login"):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
@@ -99,82 +94,86 @@ if st.session_state.user_role is None:
                 else:
                     st.error("Invalid credentials!")
 
-# Main app for logged-in users
-else:
-    # Logout button
-    if st.sidebar.button("Logout"):
-        st.session_state.user_role = None
+# Logout button for admin
+if st.session_state.user_role == "admin":
+    if st.sidebar.button("Logout to User"):
+        st.session_state.user_role = "user"
         st.rerun()
-    
-    st.title("🎉 Vote to Reveal the Theme")
-    st.sidebar.write(f"**Role:** {st.session_state.user_role.title()}")
-    
-    # UI: config from secrets or sidebar
-    default_thresh = int(st.secrets.get("THRESHOLD", 50))
+
+st.title("🎉 Vote to Reveal the Theme")
+st.sidebar.write(f"**Role:** {st.session_state.user_role.title()}")
+
+# UI: config from secrets or sidebar (admin can change threshold)
+default_thresh = int(st.secrets.get("THRESHOLD", 50))
+if st.session_state.user_role == "admin":
     threshold = int(st.sidebar.number_input("Reveal threshold", min_value=1, value=default_thresh))
-    theme = st.secrets.get("THEME", "Your Theme Here")
+else:
+    threshold = default_thresh
+    st.sidebar.write(f"**Threshold:** {threshold}")
+
+theme = st.secrets.get("THEME", "Your Theme Here")
+
+# Current votes and progress
+votes = get_votes()
+force_revealed = is_force_revealed()
+
+st.metric("Total Votes", votes)
+st.progress(min(votes/threshold, 1.0))
+
+# Admin controls (ONLY FOR ADMIN)
+if st.session_state.user_role == "admin":
+    st.sidebar.header("🔧 Admin Controls")
     
-    # Current votes and progress
-    votes = get_votes()
-    force_revealed = is_force_revealed()
-    
-    st.metric("Total Votes", votes)
-    st.progress(min(votes/threshold, 1.0))
-    
-    # Admin controls
-    if st.session_state.user_role == "admin":
-        st.sidebar.header("🔧 Admin Controls")
-        
-        if force_revealed:
-            if st.sidebar.button("🔒 Hide Theme"):
-                set_force_reveal(False)
-                st.sidebar.success("Theme hidden!")
-                st.rerun()
-        else:
-            if st.sidebar.button("🔓 Force Reveal Theme"):
-                set_force_reveal(True)
-                st.sidebar.success("Theme force revealed!")
-                st.rerun()
-        
-        if st.sidebar.button("🗑️ Reset All Votes"):
-            votes_ref.set(0)
-            users_ref.delete()
-            logs_ref.delete()
+    if force_revealed:
+        if st.sidebar.button("🔒 Hide Theme"):
             set_force_reveal(False)
-            st.sidebar.success("All data reset!")
+            st.sidebar.success("Theme hidden!")
+            st.rerun()
+    else:
+        if st.sidebar.button("🔓 Force Reveal Theme"):
+            set_force_reveal(True)
+            st.sidebar.success("Theme force revealed!")
             st.rerun()
     
-    # Voting section (only for users)
-    if st.session_state.user_role == "user":
-        left, right = st.columns([2,1])
-        with left:
-            if has_voted(st.session_state.client_id):
-                st.info("✅ You already voted — thank you!")
-            else:
-                if st.button("Vote"):
-                    try:
-                        record_vote(st.session_state.client_id)
-                        st.success("Thanks — your vote has been counted! 🎉")
-                        st.rerun()
-                    except Exception as e:
-                        st.error("Could not record vote. Try again or contact the organizer.")
-        with right:
-            st.write(f"Threshold: **{threshold}**")
-            if votes < threshold and not force_revealed:
-                st.write(f"**{threshold - votes}** votes left to reveal")
-            else:
-                st.write("Threshold reached!" if votes >= threshold else "Admin force revealed!")
+    if st.sidebar.button("🗑️ Reset All Votes"):
+        votes_ref.set(0)
+        users_ref.delete()
+        logs_ref.delete()
+        set_force_reveal(False)
+        st.sidebar.success("All data reset!")
+        st.rerun()
+
+# Voting section (ONLY FOR USERS)
+if st.session_state.user_role == "user":
+    left, right = st.columns([2,1])
+    with left:
+        if has_voted(st.session_state.client_id):
+            st.info("✅ You already voted — thank you!")
+        else:
+            if st.button("Vote", type="primary"):
+                try:
+                    record_vote(st.session_state.client_id)
+                    st.success("Thanks — your vote has been counted! 🎉")
+                    st.rerun()
+                except Exception as e:
+                    st.error("Could not record vote. Try again or contact the organizer.")
+    with right:
+        st.write(f"Threshold: **{threshold}**")
+        if votes < threshold and not force_revealed:
+            st.write(f"**{threshold - votes}** votes left to reveal")
+        else:
+            st.write("Threshold reached!" if votes >= threshold else "Admin force revealed!")
+
+# Reveal logic (SHOWS FOR EVERYONE)
+if votes >= threshold or force_revealed:
+    st.balloons()
+    reveal_html = f"""
+    <div style="text-align:center; padding:20px;">
+      <h1 style="font-size:48px; margin:0;">🎊 THE THEME 🎊</h1>
+      <h2 style="font-size:36px; margin-top:10px;">{theme}</h2>
+    </div>
+    """
+    components.html(reveal_html, height=220)
     
-    # Reveal logic
-    if votes >= threshold or force_revealed:
-        st.balloons()
-        reveal_html = f"""
-        <div style="text-align:center; padding:20px;">
-          <h1 style="font-size:48px; margin:0;">🎊 THE THEME 🎊</h1>
-          <h2 style="font-size:36px; margin-top:10px;">{theme}</h2>
-        </div>
-        """
-        components.html(reveal_html, height=220)
-        
-        if force_revealed and st.session_state.user_role == "admin":
-            st.info("⚡ Theme force revealed by admin")
+    if force_revealed and st.session_state.user_role == "admin":
+        st.info("⚡ Theme force revealed by admin")
